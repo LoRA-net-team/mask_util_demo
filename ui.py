@@ -58,16 +58,30 @@ def masked_sum_score(mask:Image.Image, score_path:str, smoothen_array:bool, kern
     @param smoothen_array: whether to apply linear smoothing filter to score array
     @param kernel_size: kernel size for linear smoothing filter
     """
-    score_arr = load_numpy_array(score_path, mask.size)
+    # score array is 0 to 1 float array(1d)
+    # convert to grayscale
+    binary_mask = mask.convert('L') # between 0 and 255
+    print("binary_mask", binary_mask.size)
+    score_arr = load_numpy_array(score_path, binary_mask.size)
+    # if dim is 3, mean is taken
+    if len(score_arr.shape) == 3:
+        score_arr = score_arr.mean(axis=2)
+    print("score_arr", score_arr.shape)
     if smoothen_array:
-        score_arr = linear_smoothing_filter(Image.fromarray(score_arr), kernel_size)
-        score_arr = np.array(score_arr)
-    # apply mask
-    mask_arr = np.array(mask)
-    masked_score_arr = score_arr * mask_arr
+        binary_mask = linear_smoothing_filter(binary_mask, kernel_size) # between 0 and 255
+        # convert to image for preview
+    preview_arr = np.array(binary_mask)
+    # convert to image for preview, round to int
+    preview_arr = preview_arr.round().astype(np.uint8)
+    # apply mask, convert to float with 2-dim
+    float_mask_arr = np.array(binary_mask) / 255
+    masked_score_arr = score_arr * float_mask_arr
+    score_outside = score_arr * (1 - float_mask_arr)
     # calculate sum
     masked_sum = masked_score_arr.sum()
-    return masked_sum
+    score_outside_sum = score_outside.sum()
+    percentage = masked_sum / (masked_sum + score_outside_sum) * 100
+    return masked_sum, score_outside_sum,percentage, preview_arr
 
 # create interface
 with blocks:
@@ -80,12 +94,15 @@ with blocks:
             mask_button.click(binary_mask, inputs=[image_input], outputs=[mask_output])
         # second tab is for calculating masked sum score
         with gr.TabItem("Masked sum score"):
-            mask_input = gr.Image(label="Mask", type="pil", source="upload", interactive=False) # disable interactive
+            mask_input = gr.Image(label="Mask", type="pil", source="upload") # disable interactive
             score_path_input = gr.Textbox(lines=1, label="Score array path")
             smoothen_array_input = gr.Checkbox(label="Smoothen array", default=False)
             kernel_size_input = gr.Slider(minimum=1, maximum=100, step=1, default=1, label="Kernel size")
-            masked_sum_output = gr.Textbox(lines=1)
+            preview_arr_output = gr.outputs.Image(type="numpy", label="Preview array")
+            masked_sum_output = gr.Textbox(lines=1, label="Masked sum score")
+            score_outside_sum_output = gr.Textbox(lines=1, label="Score outside sum")
+            score_percentage_output = gr.Textbox(lines=1, label="Score percentage")
             masked_sum_button = gr.Button("Submit")
-            masked_sum_button.click(masked_sum_score, inputs=[mask_input, score_path_input, smoothen_array_input, kernel_size_input], outputs=[masked_sum_output])
+            masked_sum_button.click(masked_sum_score, inputs=[mask_input, score_path_input, smoothen_array_input, kernel_size_input], outputs=[masked_sum_output,score_outside_sum_output,score_percentage_output, preview_arr_output])
 
 blocks.launch()
