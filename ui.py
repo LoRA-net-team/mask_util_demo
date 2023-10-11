@@ -1,8 +1,9 @@
 import gradio as gr
 from PIL import Image
-from typing import Union, Tuple
+from typing import Union, Tuple, Dict
 import numpy as np
 import cv2
+import os
 # create interface with mask for drawing
 blocks = gr.Blocks()
 
@@ -60,6 +61,11 @@ def masked_sum_score(mask:Image.Image, score_path:str, smoothen_array:bool, kern
     """
     # score array is 0 to 1 float array(1d)
     # convert to grayscale
+    #if mask is str, open path
+    if isinstance(mask, str):
+        if not os.path.exists(mask):
+            raise Exception(f"mask file does not exist: {mask}")
+        mask = Image.open(mask)
     binary_mask = mask.convert('L') # between 0 and 255
     print("binary_mask", binary_mask.size)
     score_arr = load_numpy_array(score_path, binary_mask.size)
@@ -83,6 +89,76 @@ def masked_sum_score(mask:Image.Image, score_path:str, smoothen_array:bool, kern
     percentage = masked_sum / (masked_sum + score_outside_sum) * 100
     return masked_sum, score_outside_sum,percentage, preview_arr
 
+def calculate_folder(folder_path:str, kernel_size:int, smoothen_array:bool) -> Dict[str, float]:
+    """
+    Calculate masked sum score for all images in folder_path.
+    image with _mask.png will be used as mask.
+    image with *.npy will be used as score array.
+    
+    @return: dict of {score_file: score_percentage}
+    """
+    # check if folder_path exists
+    if not os.path.exists(folder_path):
+        raise Exception(f"folder_path does not exist: {folder_path}")
+    # get all files in folder_path
+    files = os.listdir(folder_path)
+    # get mask file and score file
+    mask_file = None
+    score_files = []
+    for file in files:
+        if file.endswith("_mask.png"):
+            mask_file = file
+        elif file.endswith(".npy"):
+            score_files.append(file)
+    # check if mask_file and score_files are found
+    if mask_file is None:
+        raise Exception(f"mask_file not found in folder_path: {folder_path}")
+    if len(score_files) == 0:
+        raise Exception(f"score_files not found in folder_path: {folder_path}")
+    # calculate score for each score file
+    scores = {}
+    for score_file in score_files:
+        # get score path
+        score_path = os.path.join(folder_path, score_file)
+        mask_file_path = os.path.join(folder_path, mask_file)
+        # get masked sum score
+        masked_sum, score_outside_sum, percentage, preview_arr = masked_sum_score(mask_file_path, score_path, smoothen_array, kernel_size)
+        # add to scores
+        scores[score_file] = percentage
+    return scores
+        
+def calculate_folder_recursive(folder_path:str, kernel_size:int, smoothen_array:bool, ignore_error:bool=False) -> Dict[str, Dict[str, float]]:
+    """
+    Calculate folders recursively.
+    """
+    # get all folders in folder_path
+    folders = os.listdir(folder_path)
+    # skip empty folders
+    if len(folders) == 0:
+        return {}
+    scores = {}
+    for folder in folders:
+        # check if folder is a folder
+        folder = os.path.join(folder_path, folder)
+        if not os.path.isdir(folder):
+            continue
+        # if folder is empty, skip
+        if len(os.listdir(folder)) == 0:
+            continue
+        # calculate score for folder
+        try:
+            scores[folder] = calculate_folder(folder, kernel_size, smoothen_array)
+        except Exception as e:
+            if ignore_error:
+                print(f"Error in folder: {folder}")
+                print(e)
+            else:
+                raise e
+    # return scores
+    return scores
+
+
+
 # create interface
 with blocks:
     with gr.Tabs():
@@ -104,5 +180,12 @@ with blocks:
             score_percentage_output = gr.Textbox(lines=1, label="Score percentage")
             masked_sum_button = gr.Button("Submit")
             masked_sum_button.click(masked_sum_score, inputs=[mask_input, score_path_input, smoothen_array_input, kernel_size_input], outputs=[masked_sum_output,score_outside_sum_output,score_percentage_output, preview_arr_output])
-
+        with gr.TabItem("Masked sum score for folders"):
+            folder_path_input = gr.Textbox(lines=1, label="Folder path")
+            smoothen_array_input = gr.Checkbox(label="Smoothen array", default=False)
+            kernel_size_input = gr.Slider(minimum=1, maximum=100, step=1, default=1, label="Kernel size")
+            ignore_error_input = gr.Checkbox(label="Ignore error", default=False)
+            scores_output = gr.outputs.Textbox(label="Scores")
+            calculate_folder_button = gr.Button("Submit")
+            calculate_folder_button.click(calculate_folder_recursive, inputs=[folder_path_input, kernel_size_input, smoothen_array_input, ignore_error_input], outputs=[scores_output])
 blocks.launch()
