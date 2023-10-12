@@ -73,7 +73,7 @@ def masked_sum_score(mask:Image.Image, score_path:str, smoothen_array:bool, kern
     score_arr = load_numpy_array(score_path, binary_mask.size)
     # if dim is 3, mean is taken
     if len(score_arr.shape) == 3:
-        score_arr = score_arr.mean(axis=2)
+        score_arr = score_arr.mean(0)
     print("score_arr", score_arr.shape)
     # apply threshold to binary mask
     binary_mask = binary_mask.point(lambda x: 255 if x < 25 else 0)
