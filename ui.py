@@ -4,6 +4,7 @@ from typing import Union, Tuple, Dict
 import numpy as np
 import cv2
 import os
+from seaborn import heatmap
 # create interface with mask for drawing
 blocks = gr.Blocks()
 
@@ -64,8 +65,9 @@ def masked_sum_score(mask:Image.Image, score_path:str, smoothen_array:bool, kern
     #if mask is str, open path
     if isinstance(mask, str):
         if not os.path.exists(mask):
-            raise Exception(f"mask file does not exist: {mask}")
+            raise FileNotFoundError(f"mask file does not exist: {mask}")
         mask = Image.open(mask)
+    # if mask is 3-channel, match black area
     binary_mask = mask.convert('L') # between 0 and 255
     print("binary_mask", binary_mask.size)
     score_arr = load_numpy_array(score_path, binary_mask.size)
@@ -73,6 +75,8 @@ def masked_sum_score(mask:Image.Image, score_path:str, smoothen_array:bool, kern
     if len(score_arr.shape) == 3:
         score_arr = score_arr.mean(axis=2)
     print("score_arr", score_arr.shape)
+    # apply threshold to binary mask
+    binary_mask = binary_mask.point(lambda x: 255 if x < 25 else 0)
     if smoothen_array:
         binary_mask = linear_smoothing_filter(binary_mask, kernel_size) # between 0 and 255
         # convert to image for preview
@@ -87,7 +91,24 @@ def masked_sum_score(mask:Image.Image, score_path:str, smoothen_array:bool, kern
     masked_sum = masked_score_arr.sum()
     score_outside_sum = score_outside.sum()
     percentage = masked_sum / (masked_sum + score_outside_sum) * 100
-    return masked_sum, score_outside_sum,percentage, preview_arr
+    
+    #heatmap
+    score_heatmap = heatmap(score_arr, cmap="YlGnBu")
+    # convert to image for preview
+    buffer:memoryview = score_heatmap.get_figure().canvas.buffer_rgba()
+    score_heatmap_pil = Image.frombuffer('RGBA', score_heatmap.get_figure().canvas.get_width_height(), buffer, 'raw', 'RGBA', 0, 1)
+    return masked_sum, score_outside_sum,percentage, preview_arr, score_heatmap_pil
+
+def preprocess_mask(mask:Image.Image) -> Image.Image:
+    """
+    Preprocess mask image.
+    Mask may be arbitrary 3-channel image
+    """
+    mask_processed = mask.convert('L') # convert to grayscale
+    # apply threshold
+    mask_processed = mask_processed.point(lambda x: 255 if x < 25 else 0)
+    return mask_processed
+
 
 def calculate_folder(folder_path:str, kernel_size:int, smoothen_array:bool) -> Dict[str, float]:
     """
@@ -96,10 +117,12 @@ def calculate_folder(folder_path:str, kernel_size:int, smoothen_array:bool) -> D
     image with *.npy will be used as score array.
     
     @return: dict of {score_file: score_percentage}
+    
+    @throws FileNotFoundError: if folder_path does not exist, or mask_file or score_files are not found
     """
     # check if folder_path exists
     if not os.path.exists(folder_path):
-        raise Exception(f"folder_path does not exist: {folder_path}")
+        raise FileNotFoundError(f"folder_path does not exist: {folder_path}")
     # get all files in folder_path
     files = os.listdir(folder_path)
     # get mask file and score file
@@ -112,9 +135,9 @@ def calculate_folder(folder_path:str, kernel_size:int, smoothen_array:bool) -> D
             score_files.append(file)
     # check if mask_file and score_files are found
     if mask_file is None:
-        raise Exception(f"mask_file not found in folder_path: {folder_path}")
+        raise FileNotFoundError(f"mask_file not found in folder_path: {folder_path}")
     if len(score_files) == 0:
-        raise Exception(f"score_files not found in folder_path: {folder_path}")
+        raise FileNotFoundError(f"score_files not found in folder_path: {folder_path}")
     # calculate score for each score file
     scores = {}
     for score_file in score_files:
@@ -122,7 +145,7 @@ def calculate_folder(folder_path:str, kernel_size:int, smoothen_array:bool) -> D
         score_path = os.path.join(folder_path, score_file)
         mask_file_path = os.path.join(folder_path, mask_file)
         # get masked sum score
-        masked_sum, score_outside_sum, percentage, preview_arr = masked_sum_score(mask_file_path, score_path, smoothen_array, kernel_size)
+        masked_sum, score_outside_sum, percentage, preview_arr, heatmap_arr = masked_sum_score(mask_file_path, score_path, smoothen_array, kernel_size)
         # add to scores
         scores[score_file] = percentage
     return scores
@@ -136,6 +159,9 @@ def calculate_folder_recursive(folder_path:str, kernel_size:int, smoothen_array:
     # skip empty folders
     if len(folders) == 0:
         return {}
+    # skip folders with no .npy files
+    if len([f for f in folders if f.endswith(".npy")]) == 0:
+        return {}
     scores = {}
     for folder in folders:
         # check if folder is a folder
@@ -148,7 +174,7 @@ def calculate_folder_recursive(folder_path:str, kernel_size:int, smoothen_array:
         # calculate score for folder
         try:
             scores[folder] = calculate_folder(folder, kernel_size, smoothen_array)
-        except Exception as e:
+        except FileNotFoundError as e:
             if ignore_error:
                 print(f"Error in folder: {folder}")
                 print(e)
@@ -168,9 +194,14 @@ with blocks:
             mask_output = gr.outputs.Image(type="pil")
             mask_button = gr.Button("Submit")
             mask_button.click(binary_mask, inputs=[image_input], outputs=[mask_output])
+        with gr.TabItem("Mask preview"):
+            mask_input_2 = gr.Image(label="Mask", type="pil", source="upload")
+            preview_mask_output = gr.outputs.Image(type="pil")
+            preprocess_button = gr.Button("Submit")
+            preprocess_button.click(preprocess_mask, inputs=[mask_input_2], outputs=[preview_mask_output])
         # second tab is for calculating masked sum score
         with gr.TabItem("Masked sum score"):
-            mask_input = gr.Image(label="Mask", type="pil", source="upload") # disable interactive
+            mask_input = gr.Image(label="Mask", type="pil", source="upload")
             score_path_input = gr.Textbox(lines=1, label="Score array path")
             smoothen_array_input = gr.Checkbox(label="Smoothen array", default=False)
             kernel_size_input = gr.Slider(minimum=1, maximum=100, step=1, default=1, label="Kernel size")
@@ -178,8 +209,9 @@ with blocks:
             masked_sum_output = gr.Textbox(lines=1, label="Masked sum score")
             score_outside_sum_output = gr.Textbox(lines=1, label="Score outside sum")
             score_percentage_output = gr.Textbox(lines=1, label="Score percentage")
+            score_visualization_output = gr.outputs.Image(type="pil", label="Score visualization")
             masked_sum_button = gr.Button("Submit")
-            masked_sum_button.click(masked_sum_score, inputs=[mask_input, score_path_input, smoothen_array_input, kernel_size_input], outputs=[masked_sum_output,score_outside_sum_output,score_percentage_output, preview_arr_output])
+            masked_sum_button.click(masked_sum_score, inputs=[mask_input, score_path_input, smoothen_array_input, kernel_size_input], outputs=[masked_sum_output,score_outside_sum_output,score_percentage_output, preview_arr_output, score_visualization_output])
         with gr.TabItem("Masked sum score for folders"):
             folder_path_input = gr.Textbox(lines=1, label="Folder path")
             smoothen_array_input = gr.Checkbox(label="Smoothen array", default=False)
