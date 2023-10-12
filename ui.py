@@ -160,8 +160,6 @@ def calculate_folder_recursive(folder_path:str, kernel_size:int, smoothen_array:
     if len(folders) == 0:
         return {}
     # skip folders with no .npy files
-    if len([f for f in folders if f.endswith(".npy")]) == 0:
-        return {}
     scores = {}
     for folder in folders:
         # check if folder is a folder
@@ -170,6 +168,9 @@ def calculate_folder_recursive(folder_path:str, kernel_size:int, smoothen_array:
             continue
         # if folder is empty, skip
         if len(os.listdir(folder)) == 0:
+            continue
+        # skip if no .npy files
+        if len([file for file in os.listdir(folder) if file.endswith(".npy")]) == 0:
             continue
         # calculate score for folder
         try:
